@@ -1,0 +1,45 @@
+[Game]
+host = "localhost"
+input_port = 10002
+output_port = 43210
+
+[InputLayer]
+multicast_ip = "224.5.23.2"
+game_controller_ip = "224.5.23.1"
+vision_port = 10020
+autoref_port = 10010
+game_controller_port = 10003
+use_ref_vision = true
+side = "right"
+
+[Tracking]
+color = "yellow"
+
+[Decision]
+coach = "DRLCoach"
+persistence_transformation="one_v_one"
+output_transformation="one_v_one_output"
+ignore_autoref = true
+
+[Decision.sender]
+host = "127.0.0.1"
+port = 10001
+
+[[Decision.models]]
+id="goalkeeper"
+file_path="models/goalkeeper.pt"
+transformation="one_v_one"
+
+[[Decision.models]]
+id="striker"
+file_path="models/striker.pt"
+transformation="one_v_one"
+
+[Control]
+
+[OutputLayer]
+host_ip = "localhost"
+command_port = 10301
+serial_port = "/dev/ttyUSB0"
+baud_rate =  115200
+use_gr_sim = true
