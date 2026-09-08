@@ -11,7 +11,7 @@ state_dim = 16
 action_dim = 4
 rollout_batch_size = 32
 save_every_n_epochs = 10
-test_case = "SHOOTOUT"
+test_case = "TEST"
 input_module = "NeonFC"
 
 [sac]
