@@ -13,6 +13,8 @@ rollout_batch_size = 32
 save_every_n_epochs = 10
 test_case = "TEST"
 input_module = "NeonFC"
+reward_keys = { striker = "1", goalkeeper = "0" }
+zero_sum = false
 
 [sac]
 hidden_sizes = [256, 256]
