@@ -6,6 +6,10 @@ LOG_DIR="$SCRIPT_DIR/logs"
 source "$SCRIPT_DIR/manifest.conf"
 source "$SCRIPT_DIR/lib/common.sh"
 
+# wait -n (used below to notice a dying service) needs bash 4.3.
+(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3) )) \
+  || { err "bash >= 4.3 required (found ${BASH_VERSION})"; exit 1; }
+
 # Colors cycled across services so each one's lines are visually distinct
 # in the terminal. Log files themselves are plain text (no color codes).
 COLORS=(32 34 33 35 36 31) # green, blue, yellow, magenta, cyan, red
@@ -46,6 +50,8 @@ if ! command -v script >/dev/null 2>&1; then
   exit 1
 fi
 
+command -v docker >/dev/null || { err "docker not found on PATH"; exit 1; }
+
 if ! docker compose -f "$SCRIPT_DIR/docker-compose.yml" ps -q | grep -q .; then
   err "Simulator/GUI stack doesn't look like it's running."
   err "Start it once with: ./docker-ctl.sh up"
@@ -53,6 +59,27 @@ if ! docker compose -f "$SCRIPT_DIR/docker-compose.yml" ps -q | grep -q .; then
 fi
 
 mkdir -p "$LOG_DIR"
+
+# Ctrl-C in parallel mode would otherwise orphan the background
+# services, which keep holding ports 10001-10003 so the next run fails
+# with "address already in use".
+#
+# Job control is enabled while services start so each one leads its own
+# process group; we then signal that group rather than the pid, because
+# a service is `script` wrapping the real command and a bare TERM to the
+# subshell never reaches it.
+JOB_PIDS=()
+
+cleanup_jobs() {
+  local pid
+  for pid in "${JOB_PIDS[@]:-}"; do
+    # `|| true`: a service that already exited has no process group left
+    # to signal, and under `set -e` that failure would abandon the rest.
+    [ -n "$pid" ] && kill -TERM -"$pid" 2>/dev/null || true
+  done
+}
+
+trap 'trap - INT TERM; cleanup_jobs; kill -TERM $$ 2>/dev/null; wait' INT TERM
 
 # Single-service debug run: plain foreground output, still logged.
 # Wrapped with `script` so the child process gets a real pseudo-terminal -
@@ -74,13 +101,36 @@ run_one() {
 run_item_parallel() {
   local folder="$1" cmd="$2" color="$3"
   local logfile="$LOG_DIR/${folder}.log"
+  local statusfile="$LOG_DIR/.${folder}.status"
+  rm -f "$statusfile"
   (
     cd "$SCRIPT_DIR/$folder"
+    # `set -e` + pipefail would abort this subshell the moment script
+    # exits non-zero, before the status is recorded.
+    set +e
     script -qefc "$cmd" "$logfile" | while IFS= read -r line; do
       printf "\033[1;%sm[%s]\033[0m %s\n" "$color" "$folder" "$line"
     done
-    exit "${PIPESTATUS[0]}"
+    rc=${PIPESTATUS[0]}
+    set -e
+    # `wait -n` doesn't say which job it reaped, so each one records its
+    # own exit status for the stage loop to read back.
+    printf '%s' "$rc" > "$statusfile"
+    exit "$rc"
   ) &
+}
+
+# Name of the first service in this stage that reported a non-zero exit.
+failed_service() {
+  local name statusfile
+  for name in "${names[@]}"; do
+    statusfile="$LOG_DIR/.${name}.status"
+    if [ -f "$statusfile" ] && [ "$(cat "$statusfile" 2>/dev/null)" != "0" ]; then
+      printf '%s' "$name"
+      return 0
+    fi
+  done
+  return 1
 }
 
 run_stage() {
@@ -90,6 +140,7 @@ run_stage() {
   local color_idx=0
 
   IFS=';' read -ra items <<< "$stage"
+  set -m   # each background service becomes its own process group leader
   for item in "${items[@]}"; do
     IFS='|' read -r folder cmd <<< "$item"
     local color="${COLORS[$((color_idx % ${#COLORS[@]}))]}"
@@ -97,21 +148,26 @@ run_stage() {
     log "==> Starting $folder: $cmd  (logs/${folder}.log)"
     run_item_parallel "$folder" "$cmd" "$color"
     pids+=("$!")
+    JOB_PIDS+=("$!")
     names+=("$folder")
   done
+  set +m   # groups are assigned; silence job-control notifications
 
-  local failed=0
-  for i in "${!pids[@]}"; do
-    if ! wait "${pids[$i]}"; then
-      err "${names[$i]} exited with an error (see logs/${names[$i]}.log)"
-      failed=1
+  # wait -n so a dying service is noticed immediately, instead of the
+  # surviving ones holding the stage open indefinitely.
+  local remaining=${#pids[@]}
+  while [ "$remaining" -gt 0 ]; do
+    wait -n || true
+    remaining=$((remaining - 1))
+
+    if failed_name=$(failed_service); then
+      err "${failed_name} exited with an error (see logs/${failed_name}.log)"
+      err "Stopping the rest of the stage"
+      cleanup_jobs
+      wait 2>/dev/null
+      exit 1
     fi
   done
-
-  if [ "$failed" -eq 1 ]; then
-    err "Stage failed, stopping pipeline"
-    exit 1
-  fi
 }
 
 if [ -n "${1:-}" ]; then

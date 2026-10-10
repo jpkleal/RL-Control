@@ -10,16 +10,20 @@ vision_port = 10020
 autoref_port = 10010
 game_controller_port = 10003
 use_ref_vision = true
-side = "right"
+side = "left"
 
 [Tracking]
-color = "yellow"
+color = "blue"
 
 [Decision]
 coach = "DRLCoach"
+# The trainer may not have written the policies yet on a cold start.
+model_wait_timeout = 300
 persistence_transformation="one_v_one"
 output_transformation="one_v_one_output"
 ignore_autoref = true
+# The harness drives episode boundaries, so the agent waits for "play".
+start_halted = true
 
 [Decision.sender]
 host = "127.0.0.1"
@@ -27,12 +31,12 @@ port = 10001
 
 [[Decision.models]]
 id="goalkeeper"
-file_path="models/goalkeeper.pt"
+file_path="runs/training/current/goalkeeper.pt"
 transformation="one_v_one"
 
 [[Decision.models]]
 id="striker"
-file_path="models/striker.pt"
+file_path="runs/training/current/striker.pt"
 transformation="one_v_one"
 
 [Control]
