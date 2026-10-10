@@ -10,11 +10,21 @@ role_ids = ["striker", "goalkeeper"]
 state_dim = 16
 action_dim = 4
 rollout_batch_size = 32
-save_every_n_epochs = 10
-test_case = "TEST"
+save_every_n_epochs = 5
+test_case = "SHOOTOUT"
 input_module = "NeonFC"
+# LyNCh keys rewards by robot id: blue 1 = striker, blue 0 = keeper
+# (see LyNCh/templates/penalty_kick_positions.yaml).
 reward_keys = { striker = "1", goalkeeper = "0" }
-zero_sum = false
+# The roles are adversarial in SHOOTOUT: a scored goal is +1 for the
+# striker but a concession for the keeper, so negate the keeper's
+# rewards at ingestion. A timeout then reads as +1 (clean sheet) for
+# the keeper instead of the -1 both roles got with zero_sum = false.
+zero_sum = true
+# NeonFC decides at ~60 Hz; holding each sampled action for 10 frames
+# gives a new target ~6 times/second, which the P-controller can follow.
+stochastic_play = true
+action_hold_frames = 10
 
 [sac]
 hidden_sizes = [256, 256]
@@ -23,11 +33,26 @@ critic_lr = 3e-4
 alpha_lr = 3e-4
 gamma = 0.99
 tau = 0.005
-initial_alpha = 0.2
-auto_alpha = true
+# Fixed alpha for the warm-start phase. Two observations drive this
+# value: (1) auto-alpha collapsed (0.197 -> 0.018 over 79 epochs) before
+# a single goal ever fired; (2) with alpha = 0.15 and a flat Q landscape
+# (zero goals), the entropy term eroded the warm-started ball-seeking
+# prior completely -- by epoch ~60 the striker never came within 1.4 m
+# of the ball. 0.05 keeps enough exploration to find the goal while
+# letting the restored prior survive long enough to score.
+initial_alpha = 0.05
+auto_alpha = false
 replay_capacity = 200_000
 min_buffer_size = 1_000
 batch_size = 256
+# Device-tuned on this machine: a batch of 32 SHOOTOUT episodes at 25s
+# yields ~48k transitions per role, so 0.002 gives ~96 gradient steps
+# per epoch -- enough to move the policy without starving the CPU
+# (the 0.25 default would demand thousands of steps per epoch).
+updates_per_transition = 0.002
+# Hard ceiling in case several batches coalesce after a stall; ~2x the
+# expected per-epoch step count.
+max_updates_per_call = 200
 
 [ppo]
 hidden_sizes = [256, 256]
