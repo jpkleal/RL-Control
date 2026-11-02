@@ -17,7 +17,7 @@ color = "yellow"
 
 [Decision]
 coach = "DRLCoach"
-persistence_transformation="one_v_one"
+persistence_transformation="n_robots"
 output_transformation="one_v_one_output"
 ignore_autoref = true
 
@@ -27,13 +27,9 @@ port = 10001
 
 [[Decision.models]]
 id="goalkeeper"
+robot_id=0
 file_path="models/goalkeeper.pt"
-transformation="one_v_one"
-
-[[Decision.models]]
-id="striker"
-file_path="models/striker.pt"
-transformation="one_v_one"
+transformation="n_robots"
 
 [Control]
 
