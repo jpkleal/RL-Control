@@ -18,12 +18,12 @@ zero_sum = false
 
 [sac]
 hidden_sizes = [64, 64]
-actor_lr = 3e-4
+actor_lr = 1e-3
 critic_lr = 3e-4
-alpha_lr = 1e-3
+alpha_lr = 3e-3
 gamma = 0.99
 tau = 0.005
-initial_alpha = 0.2
+initial_alpha = 0.1
 auto_alpha = true
 replay_capacity = 200_000
 min_buffer_size = 1_000
