@@ -16,6 +16,7 @@ project-setup/
 ├── manifest.conf        # repo URLs/branches/tags, tool versions, shared dirs, symlink map, run order - edit this
 ├── setup.sh             # check tools, clone/update the 3 repos (tag or branch tip), poetry install, symlinks, versions.json
 ├── run.sh               # run one service, or all in sequence
+├── campaign.sh          # measurement runs: K independent runs, safe shutdown, artifacts stored + exported
 ├── docker-ctl.sh         # up/down/status for the simulator+GUI stack
 ├── docker-compose.yml    # simulator + GUI services
 ├── .gitignore
@@ -30,6 +31,7 @@ project-setup/
 ├── LyNCh/                # cloned repo (branch: main)
 ├── RL-Engine/             # cloned repo (branch: main)
 ├── NeonFC-SSL/            # cloned repo (branch: feat/drl)
+├── campaigns/            # measurement runs stored by campaign.sh
 └── shared/
     ├── results/           # real dir -> LyNCh/results, RL-Engine/results (+ versions.json)
     └── models/            # real dir -> NeonFC-SSL/runs/training/current, RL-Engine/runs/training/current
@@ -48,7 +50,7 @@ environment it just configured (see [Pinning versions](#pinning-versions-tags)).
   credentials/token). If a repo is private, make sure you can run
   `git ls-remote <url>` for it before running `setup.sh`.
 - [poetry](https://python-poetry.org/) installed and on your `PATH`, with the
-  major.minor version given by `POETRY_VERSION` in `manifest.conf` (2.2).
+  major.minor version given by `POETRY_VERSION` in `manifest.conf` (2.5).
 - `python<PYTHON_VERSION>` on your `PATH` (e.g. `python3.12`), matching
   `PYTHON_VERSION` in `manifest.conf`.
 - docker + the docker compose plugin, for the simulator/GUI stack.
@@ -222,38 +224,56 @@ Per-epoch timing (request, file close, response, ingestion, updates) is
 written separately by RL-Engine to `shared/results/timing.jsonl`, on every
 run.
 
-## Measurement runs
+## Measurement runs (`campaign.sh`)
 
-What to keep from each run that is used for evaluation. All of it is
-overwritten or mixed by the next run, so copy it into one folder per run
-(`<run>/`) before starting another:
+`campaign.sh` runs complete, independent measurement runs and stores their
+artifacts. Pin the code first (same annotated tag pushed in the 4 repos,
+`EXPERIMENT_TAG` set in `manifest.conf`), run `./setup.sh`, check
+`"pinned": true` in `shared/results/versions.json`, and start the docker
+stack. Then:
 
-```
-<run>/
-├── versions.json      # shared/results/versions.json (written by setup.sh)
-├── timing.jsonl       # shared/results/timing.jsonl (per-epoch timings, RL-Engine)
-├── summaries.jsonl    # shared/results/<scenario>/summaries.jsonl (per-batch summaries, LyNCh)
-├── archive/           # shared/results/archive/ (only with archive_dir enabled)
-├── tensorboard/       # RL-Engine/runs/tensorboard/
-├── monitor.csv        # logs/monitor.csv (only with --monitor)
-└── logs/              # logs/*.log
+```bash
+./campaign.sh --epochs 500 --runs 5                  # 5 independent runs of 500 epochs
+./campaign.sh --epochs 2000 --name stress-01         # one long run (stress test)
+./campaign.sh --epochs 500 --runs 5 --export /mnt/out --interval 30
 ```
 
-Procedure:
+For every run it:
 
-1. Pin the code: same annotated tag pushed in the 4 repos, `EXPERIMENT_TAG`
-   set in `manifest.conf`, then `./setup.sh` and check `"pinned": true` in
-   `shared/results/versions.json`.
-2. To keep the transitions files, uncomment `archive_dir` in
-   `configs/rlengine.toml`.
-3. Run with `./run.sh --monitor`.
-4. Copy the artifacts above into `<run>/`.
-5. **Before the next independent run**, clear the state left by this one -
-   otherwise RL-Engine resumes from its last checkpoint and TensorBoard
-   mixes both runs:
-   `rm -rf RL-Engine/runs shared/models/* shared/results/*` (after step 4)
-   and run `./setup.sh` again (it rewrites `versions.json`), or start from
-   a fresh checkout + `./setup.sh`.
+1. **cleans the state of earlier runs** so runs are independent:
+   `RL-Engine/runs/training/checkpoints`, `RL-Engine/runs/training/index.jsonl`
+   and `RL-Engine/runs/tensorboard` (otherwise RL-Engine resumes from the last
+   checkpoint and TensorBoard mixes runs), the contents of `shared/models/`
+   and of `shared/results/` (except `versions.json`), and `logs/`. Symlinks
+   and the cloned repos are left untouched;
+2. starts LyNCh, waits for its port, starts NeonFC-SSL, waits for its port,
+   then RL-Engine with `--epochs N`, plus the resource monitor;
+3. waits for RL-Engine to finish (a server dying earlier fails the run);
+4. **stops every service as a whole process group** - INT, then TERM after
+   20 s, then KILL after 10 s more - and checks the ports were released;
+5. stores the artifacts in `campaigns/<name>/run-<k>/` and exports
+   `campaigns/<name>/run-<k>.tar.gz` (also copied to `--export DIR`):
+
+```
+run-<k>/
+├── versions.json      # setup record (tags, SHAs, config hashes)
+├── timing.jsonl       # per-epoch timings (RL-Engine)
+├── summaries/         # <scenario>.jsonl - per-batch summaries (LyNCh)
+├── archive/           # transitions files, only with archive_dir enabled
+├── tensorboard/       # RL-Engine TensorBoard events
+├── monitor.csv        # resource samples
+├── logs/              # service logs
+└── env.txt            # host, CPU/RAM/GPU, Python/Poetry/Docker/torch, image digests
+```
+
+Ctrl-C (or TERM) stops the current run the same way and stores what it
+produced, marked `interrupted` in `env.txt`. A failed run stops the
+campaign. Existing `run-<k>` folders are never overwritten. To keep the
+transitions files, uncomment `archive_dir` in `configs/rlengine.toml`
+(~1 MB per episode before compression).
+
+`./run.sh --monitor` is still available for interactive sessions; it does
+not clean state, stop servers on its own or store artifacts.
 
 ## Changing branches, tags, repos, or run order
 
@@ -279,6 +299,6 @@ The tag was not created or not pushed in that repo
 (`git push origin <x>`), or the name in `manifest.conf` is misspelled.
 Check with `git ls-remote --tags <repo-url>`.
 
-**`Poetry 2.2.x required` / `python3.12 not found`**
+**`Poetry 2.5.x required` / `python3.12 not found`**
 Install the versions given in `manifest.conf` (`POETRY_VERSION`,
 `PYTHON_VERSION`), or update those values if the project moved on.

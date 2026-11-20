@@ -47,4 +47,4 @@ log_dir  = "runs/tensorboard"
 timing_file = "results/timing.jsonl"
 # Uncomment to keep every ingested transitions file (gzip) for offline
 # checks instead of deleting it. ~1 MB per episode before compression.
-# archive_dir = "results/archive"
+archive_dir = "results/archive"

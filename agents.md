@@ -17,6 +17,7 @@ Lightweight orchestration repo. Centralizes running the 3 sub-repos and shared f
 | `./run.sh NeonFC-SSL` | Run only NeonFC (robot controller). |
 | `./run.sh RL-Engine` | Run only RL-Engine (trainer). |
 | `./run.sh [service] --monitor` | Same, plus resource sampling every `MONITOR_INTERVAL` s (default 60) into `logs/monitor.csv` (or `logs/monitor_<service>.csv`). |
+| `./campaign.sh --epochs N [--runs K] [--name NAME] [--export DIR]` | K independent measurement runs: clean state, start services + monitor, stop them as process groups, store `campaigns/<name>/run-<k>/` and export `.tar.gz`. |
 
 ---
 
