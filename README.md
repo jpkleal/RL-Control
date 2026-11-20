@@ -13,14 +13,15 @@ history/remote.
 
 ```
 project-setup/
-├── manifest.conf        # repo URLs/branches, shared dirs, symlink map, run order - edit this
-├── setup.sh             # clone/update the 3 repos, poetry install, build symlinks
+├── manifest.conf        # repo URLs/branches/tags, tool versions, shared dirs, symlink map, run order - edit this
+├── setup.sh             # check tools, clone/update the 3 repos (tag or branch tip), poetry install, symlinks, versions.json
 ├── run.sh               # run one service, or all in sequence
 ├── docker-ctl.sh         # up/down/status for the simulator+GUI stack
 ├── docker-compose.yml    # simulator + GUI services
 ├── .gitignore
 └── lib/
-    └── common.sh         # log()/err() helpers
+    ├── common.sh         # log()/err() helpers
+    └── monitor.sh        # resource sampler used by run.sh --monitor
 ```
 
 ## What gets created locally (not tracked here)
@@ -30,20 +31,26 @@ project-setup/
 ├── RL-Engine/             # cloned repo (branch: main)
 ├── NeonFC-SSL/            # cloned repo (branch: feat/drl)
 └── shared/
-    ├── results/           # real dir -> LyNCh/results, RL-Engine/Results
-    └── models/            # real dir -> NeonFC-SSL/models, RL-Engine/runs/training/current
+    ├── results/           # real dir -> LyNCh/results, RL-Engine/results (+ versions.json)
+    └── models/            # real dir -> NeonFC-SSL/runs/training/current, RL-Engine/runs/training/current
 ```
 
 Each of the 3 folders above is an independent git repository with its own
 remote. This control repo never tracks their contents - it just clones
-them and keeps them on the branch configured in `manifest.conf`.
+them and keeps them on the tag (or branch tip) configured in `manifest.conf`.
+
+`setup.sh` also writes `shared/results/versions.json`, describing the
+environment it just configured (see [Pinning versions](#pinning-versions-tags)).
 
 ## Prerequisites
 
 - git, with access configured for all 3 repos (SSH key or HTTPS
   credentials/token). If a repo is private, make sure you can run
   `git ls-remote <url>` for it before running `setup.sh`.
-- [poetry](https://python-poetry.org/) installed and on your `PATH`.
+- [poetry](https://python-poetry.org/) installed and on your `PATH`, with the
+  major.minor version given by `POETRY_VERSION` in `manifest.conf` (2.2).
+- `python<PYTHON_VERSION>` on your `PATH` (e.g. `python3.12`), matching
+  `PYTHON_VERSION` in `manifest.conf`.
 - docker + the docker compose plugin, for the simulator/GUI stack.
 
 ## First-time setup
@@ -54,22 +61,78 @@ cd project-setup
 ./setup.sh
 ```
 
-This will, for each repo in `manifest.conf`:
-- clone it (or update it, if already present) and check out the configured branch
-- run `poetry install` inside it
+This will:
+- check that Poetry and Python match `POETRY_VERSION` / `PYTHON_VERSION`
+  (major.minor), aborting otherwise;
+- check every repo **before changing anything**, aborting if a repo has
+  uncommitted changes, commits that are not on the remote, or if a
+  configured tag does not exist on the remote;
+- for each repo in `manifest.conf`, clone it (or update it, if already
+  present) and check out its tag, or the tip of its branch if no tag is set;
+- run `poetry env use python<PYTHON_VERSION>` and `poetry install` inside it.
 
 Then it creates `shared/results` and `shared/models`, and symlinks:
 
 | Project path                              | Shared dir       |
 |--------------------------------------------|-------------------|
 | `LyNCh/results`                            | `shared/results` |
-| `RL-Engine/Results`                        | `shared/results` |
-| `NeonFC-SSL/models`                        | `shared/models`  |
+| `RL-Engine/results`                        | `shared/results` |
+| `NeonFC-SSL/runs/training/current`         | `shared/models`  |
 | `RL-Engine/runs/training/current`          | `shared/models`  |
 
-Safe to re-run any time - it updates repos to latest on their branch,
-re-runs `poetry install`, and re-checks/re-creates symlinks without
-touching them if they're already correct.
+Finally it writes `shared/results/versions.json`.
+
+Safe to re-run any time - it moves repos to their configured tag (or the
+latest commit on their branch), re-runs `poetry install`, and
+re-checks/re-creates symlinks without touching them if they're already
+correct. It never discards local work: a repo with uncommitted or unpushed
+changes makes it abort without modifying anything.
+
+## Pinning versions (tags)
+
+Each `REPOS` entry is `"name|git_url|branch|tag|local_folder"`. The tag a
+repo is checked out at is, in order of precedence:
+
+1. the entry's own `tag` field;
+2. `EXPERIMENT_TAG`, applied to every entry whose `tag` is empty;
+3. none - the repo follows the tip of `branch` (development mode, **not
+   reproducible**).
+
+Only tags are supported (no commit SHAs). A configured tag that does not
+exist on the remote is an error - there is no silent fallback to the branch.
+
+To pin a new version of the experiment:
+
+```bash
+# in each of the 3 repos (annotated tag, same name everywhere)
+git tag -a tgc-exp-01 -m "short description"
+git push origin tgc-exp-01
+
+# here
+#   manifest.conf: EXPERIMENT_TAG="tgc-exp-01"
+git commit -am "pin tgc-exp-01" && ./setup.sh
+```
+
+Suggested naming: `tgc-exp-NN`. To go back to development mode, set
+`EXPERIMENT_TAG=""` (and clear any per-entry tags) and re-run `./setup.sh`.
+
+### `shared/results/versions.json`
+
+Written by every successful `setup.sh` (overwritten each time; a failed
+setup leaves the previous file untouched). It records:
+
+- `pinned` - true only if all 3 repos are on a tag;
+- `experiment_tag`;
+- per repo: `branch`, configured `tag`, `resolved_tag`, `sha`, `dirty`,
+  and the Python version of its Poetry environment;
+- `rl_control`: this repo's `sha`, `dirty`, and SHA-256 of `manifest.conf`
+  and of each `configs/*.toml`;
+- the Poetry version.
+
+It describes the environment **as configured by setup**, not each training
+run. For a run whose results will be reported: run `./setup.sh` right
+before it, do not edit code or `configs/` until it finishes, and copy
+`versions.json` next to that run's results (the next setup overwrites it).
 
 ## Running
 
@@ -123,11 +186,80 @@ docker stack:
 ./run.sh RL-Engine
 ```
 
-## Changing branches, repos, or run order
+## Resource monitor (`--monitor`)
+
+For stress tests, `run.sh` can sample the resources of the services it
+starts:
+
+```bash
+./run.sh --monitor                          # all services -> logs/monitor.csv
+./run.sh RL-Engine --monitor                # one service  -> logs/monitor_RL-Engine.csv
+MONITOR_INTERVAL=10 ./run.sh --monitor      # sample every 10 s (default 60)
+```
+
+Without `--monitor` nothing extra runs. With it, `lib/monitor.sh` starts
+right after the services of each stage, takes a first sample immediately and
+then one every `MONITOR_INTERVAL` seconds, and stops when the stage ends. It
+also stops if `run.sh` is interrupted or killed, so it is never left behind.
+
+The CSV (recreated on every run, like the service logs) has one row per
+service per sample, summed over the service's whole process tree (NeonFC's
+layer processes included, plus the `script`/`poetry` wrappers):
+
+| Column | Meaning |
+|--------|---------|
+| `time_unix` | sample time (seconds since epoch) |
+| `service` | service folder; `_disk` rows carry only `checkpoints_kb` |
+| `n_procs` | processes in the tree (`0` once, when the service has exited) |
+| `rss_kb` | resident memory, summed |
+| `cpu_pct` | `ps` %CPU, summed |
+| `threads` | threads, summed |
+| `fds` | open file descriptors (`lsof`) |
+| `sockets` | open network sockets (`lsof -i`) |
+| `checkpoints_kb` | size of `RL-Engine/runs/training/checkpoints` (only when RL-Engine is monitored) |
+
+Per-epoch timing (request, file close, response, ingestion, updates) is
+written separately by RL-Engine to `shared/results/timing.jsonl`, on every
+run.
+
+## Measurement runs
+
+What to keep from each run that is used for evaluation. All of it is
+overwritten or mixed by the next run, so copy it into one folder per run
+(`<run>/`) before starting another:
+
+```
+<run>/
+├── versions.json      # shared/results/versions.json (written by setup.sh)
+├── timing.jsonl       # shared/results/timing.jsonl (per-epoch timings, RL-Engine)
+├── summaries.jsonl    # shared/results/<scenario>/summaries.jsonl (per-batch summaries, LyNCh)
+├── archive/           # shared/results/archive/ (only with archive_dir enabled)
+├── tensorboard/       # RL-Engine/runs/tensorboard/
+├── monitor.csv        # logs/monitor.csv (only with --monitor)
+└── logs/              # logs/*.log
+```
+
+Procedure:
+
+1. Pin the code: same annotated tag pushed in the 4 repos, `EXPERIMENT_TAG`
+   set in `manifest.conf`, then `./setup.sh` and check `"pinned": true` in
+   `shared/results/versions.json`.
+2. To keep the transitions files, uncomment `archive_dir` in
+   `configs/rlengine.toml`.
+3. Run with `./run.sh --monitor`.
+4. Copy the artifacts above into `<run>/`.
+5. **Before the next independent run**, clear the state left by this one -
+   otherwise RL-Engine resumes from its last checkpoint and TensorBoard
+   mixes both runs:
+   `rm -rf RL-Engine/runs shared/models/* shared/results/*` (after step 4)
+   and run `./setup.sh` again (it rewrites `versions.json`), or start from
+   a fresh checkout + `./setup.sh`.
+
+## Changing branches, tags, repos, or run order
 
 Everything is in `manifest.conf` - edit it, commit the change to this
 control repo, and re-run `./setup.sh`. Nobody needs to touch the scripts
-themselves for routine changes like a new default branch.
+themselves for routine changes like a new default branch or a new tag.
 
 ## Troubleshooting
 
@@ -137,3 +269,16 @@ branch name in `manifest.conf` doesn't match exactly (case, `feat/x` vs
 `x`, etc). Run `git ls-remote --heads <repo-url>` to see the real branch
 list and confirm which it is. If a clone fails partway, delete the
 partial folder (e.g. `rm -rf NeonFC-SSL`) before re-running `setup.sh`.
+
+**`has uncommitted changes` / `has commits that are not on the remote`**
+`setup.sh` refuses to move a repo that holds local work. Commit and push
+(or stash / discard) the listed changes in that repo, then re-run.
+
+**`tag '<x>' does not exist on the remote`**
+The tag was not created or not pushed in that repo
+(`git push origin <x>`), or the name in `manifest.conf` is misspelled.
+Check with `git ls-remote --tags <repo-url>`.
+
+**`Poetry 2.2.x required` / `python3.12 not found`**
+Install the versions given in `manifest.conf` (`POETRY_VERSION`,
+`PYTHON_VERSION`), or update those values if the project moved on.

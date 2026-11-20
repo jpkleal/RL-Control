@@ -8,7 +8,7 @@ Lightweight orchestration repo. Centralizes running the 3 sub-repos and shared f
 
 | Command | Purpose |
 |---------|---------|
-| `./setup.sh` | Run **once** on fresh machine. Clones 3 sub-repos, runs `poetry install` in each, creates `shared/` dirs and symlinks. Idempotent — safe to re-run. |
+| `./setup.sh` | Run on a fresh machine and whenever `manifest.conf` changes. Checks Poetry/Python versions, clones/updates the 3 sub-repos to their tag (or branch tip), runs `poetry install` in each, creates `shared/` dirs and symlinks, writes `shared/results/versions.json`. Aborts without changes if a repo has uncommitted/unpushed work or a tag is missing. |
 | `./docker-ctl.sh up` | Starts simulator/GUI stack (ER-Force + SSL-Vision + AutoRef + GameController). Leave running. |
 | `./docker-ctl.sh status` | Verify stack is up. |
 | `./docker-ctl.sh down` | Stop stack when done. |
@@ -16,6 +16,7 @@ Lightweight orchestration repo. Centralizes running the 3 sub-repos and shared f
 | `./run.sh LyNCh` | Run only Lynch (harness). |
 | `./run.sh NeonFC-SSL` | Run only NeonFC (robot controller). |
 | `./run.sh RL-Engine` | Run only RL-Engine (trainer). |
+| `./run.sh [service] --monitor` | Same, plus resource sampling every `MONITOR_INTERVAL` s (default 60) into `logs/monitor.csv` (or `logs/monitor_<service>.csv`). |
 
 ---
 
@@ -35,7 +36,9 @@ Single source of truth. Edit here, commit, re-run `./setup.sh`.
 
 | Section | Controls |
 |---------|----------|
-| `REPOS` | Name, git URL, branch, local folder for each sub-repo |
+| `EXPERIMENT_TAG` | Tag checked out in every repo without its own tag; empty = branch tip (not reproducible) |
+| `PYTHON_VERSION`, `POETRY_VERSION` | Required major.minor versions; `setup.sh` aborts on mismatch |
+| `REPOS` | `name\|git_url\|branch\|tag\|local_folder` for each sub-repo (tag optional) |
 | `SHARED_DIRS` | Real directories under `shared/` (`results`, `models`) |
 | `SYMLINKS` | Project path → shared dir mapping (4 entries) |
 | `RUN_STAGES` | Parallel service groups (semicolon-separated) |
@@ -80,6 +83,8 @@ Shared directories (via symlinks):
 | Task | Steps |
 |------|-------|
 | Switch NeonFC branch | Edit `manifest.conf` `REPOS` line for NeonFC-SSL → `./setup.sh` |
+| Pin an experiment version | `git tag -a <tag>` + `git push origin <tag>` in the 3 repos → set `EXPERIMENT_TAG` → commit → `./setup.sh` |
+| Record versions of a reported run | `./setup.sh` right before the run, no edits during it, copy `shared/results/versions.json` next to its results |
 | Re-symlink after restructure | `./setup.sh` (re-checks/re-creates symlinks) |
 | View live logs for one service | `tail -f logs/<Module>.log` (e.g., `logs/NeonFC-SSL.log`) |
 | Clean slate (nuke & restart) | `./docker-ctl.sh down` → `rm -rf LyNCh NeonFC-SSL RL-Engine shared logs` → `./setup.sh` → `./docker-ctl.sh up` → run sequence above |

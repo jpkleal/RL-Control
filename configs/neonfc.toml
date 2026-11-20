@@ -13,13 +13,16 @@ use_ref_vision = true
 side = "right"
 
 [Tracking]
-color = "yellow"
+color = "blue"
 
 [Decision]
 coach = "DRLCoach"
 persistence_transformation="n_robots"
 output_transformation="one_v_one_output"
 ignore_autoref = true
+# Seconds to wait for the trainer to write the model files on a cold start
+# (0 = fail immediately if they are missing).
+model_wait_timeout = 300
 
 [Decision.sender]
 host = "127.0.0.1"
@@ -28,7 +31,7 @@ port = 10001
 [[Decision.models]]
 id="goalkeeper"
 robot_id=0
-file_path="models/goalkeeper.pt"
+file_path="runs/training/current/goalkeeper.pt"
 transformation="n_robots"
 
 [Control]
